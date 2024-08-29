@@ -1,18 +1,41 @@
 import { Server } from "socket.io";
 import { questionsArray } from "./questions";
+import express from "express";
+import http from "http";
+import { join } from "path";
+import cors from "cors";
 
-const io = new Server({
+const app = express();
+const server = http.createServer(app);
+
+app.use(cors());
+app.get("/", (req, res) => {
+	app.use(express.static("public/"));
+	res.sendFile(join(__dirname, "/public", "index.html"));
+});
+server.listen(3000, () => {
+	console.log("server running at port 3000");
+});
+const io = new Server(server, {
 	cors: {
-		origin: "http://localhost:5173",
-		methods: ["GET", "POST"],
+		// origin: "https://drinkflix-xi.vercel.app",
+		// origin: "http://localhost:8080",
+		origin: "*",
 	},
 });
+// const io = new Server({
+// 	cors: {
+// 		origin: "*",
+// 		methods: ["GET", "POST"],
+// 	},
+// });
 
 interface UserI {
 	userId: string;
 	socketId: string;
 	name: string;
 	points: number;
+	disconnected?: boolean;
 }
 interface AnswerSubmissionI {
 	userId: string;
@@ -45,6 +68,9 @@ let users: UserI[] = [
 let gameState: GameStateI = { ...bareState, playersAnswers: [] };
 let questions: QuestionI[] = questionsArray;
 
+const TIMEOUT_DURATION = 5000; // 1 minute in milliseconds
+const disconnectTimeouts = new Map(); // To store timeout IDs for each socket
+
 function addUser(userId: string, socketId: string, name: string) {
 	const userFoundIndex = users.findIndex((user) => user.name === name);
 	if (userFoundIndex === -1) {
@@ -53,11 +79,19 @@ function addUser(userId: string, socketId: string, name: string) {
 		users[userFoundIndex].socketId = socketId;
 	}
 }
-function removeUser(socketId: string) {
-	users = users.filter((user) => user.socketId !== socketId);
+function removeUser(name: string) {
+	users = users.filter((user) => user.name !== name);
 }
 function getUserById(userId: string) {
 	return users.find((user) => user.userId === userId);
+}
+function updateUser(user: UserI) {
+	users = users.map((elem) => {
+		if (elem.name === user.name) {
+			return user;
+		}
+		return elem;
+	});
 }
 const resetGame = () => {
 	users = [];
@@ -66,7 +100,16 @@ const resetGame = () => {
 
 io.on("connection", (socket) => {
 	socket.on("addUser", ({ userId, name }) => {
-		if (users.some((user) => user.name === name)) {
+		const foundUser = users.find((user) => user.name === name);
+		if (foundUser) {
+			for (const [userName, timeoutId] of disconnectTimeouts.entries()) {
+				const disconnectedUser = users.find((user) => user.name === userName);
+				if (disconnectedUser && disconnectedUser.name === name) {
+					userReconnected(disconnectedUser.name, socket.id);
+					socket.emit("reconnected", disconnectedUser.userId);
+					return;
+				}
+			}
 			socket.emit("repeatedUser");
 			return;
 		}
@@ -144,18 +187,60 @@ io.on("connection", (socket) => {
 	});
 
 	socket.on("disconnect", () => {
-		removeUser(socket.id);
-		if (users.length === 0) {
-			gameState = { ...bareState, playersAnswers: [] };
-		}
+		const disconnectedUser = users.find((user) => user.socketId === socket.id);
+		if (!disconnectedUser) return;
+		disconnectedUser.disconnected = true;
+		updateUser(disconnectedUser);
+		updateGameState();
+
+		const timeoutId = setTimeout(() => {
+			userDisconnected(socket.id);
+		}, TIMEOUT_DURATION);
+		disconnectTimeouts.set(disconnectedUser.name, timeoutId);
 	});
 	socket.on("nextQuestion", () => {
-		nextQuestion();
+		if (gameState.playersAnswers.length !== 0) {
+			nextQuestion();
+		}
 	});
 	socket.on("reset", () => {
 		resetGame();
 		updateGameState();
 	});
+
+	const userReconnected = (name: string, newSocket: string) => {
+		const disconnectedUser = users.find((user) => user.name === name);
+		if (!disconnectedUser) return;
+		disconnectedUser.disconnected = false;
+		disconnectedUser.socketId = newSocket;
+		updateUser(disconnectedUser);
+		updateGameState();
+
+		//clean up timeout
+		const timeoutId = disconnectTimeouts.get(disconnectedUser.name);
+		if (timeoutId) {
+			clearTimeout(timeoutId); // Cancel the timeout
+			disconnectTimeouts.delete(disconnectedUser.name); // Clean up
+		}
+	};
+	const userDisconnected = (socketId: string) => {
+		const removedUser = users.find((elem) => elem.socketId === socketId);
+		const name = removedUser?.name;
+		if (!name) return;
+		removeUser(name);
+		disconnectTimeouts.delete(name); // Clean up after timeout runs
+		if (users[gameState.currentMasterIndex]?.name === name) {
+			nextQuestion();
+		} else {
+			gameState.playersAnswers = gameState.playersAnswers.filter(
+				(ans) => ans.name !== name
+			);
+		}
+		if (users.length === 0) {
+			gameState = { ...bareState, playersAnswers: [] };
+		}
+		updateGameState();
+	};
 
 	const updateGameState = () => {
 		io.emit("updateGameState", {
@@ -179,5 +264,3 @@ io.on("connection", (socket) => {
 		updateGameState();
 	};
 });
-
-io.listen(8080);
