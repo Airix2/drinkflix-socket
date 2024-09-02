@@ -4,6 +4,7 @@ import express from "express";
 import http from "http";
 import { join } from "path";
 import cors from "cors";
+import { shuffleArray } from "./utils/general";
 
 const app = express();
 const server = http.createServer(app);
@@ -61,11 +62,20 @@ const bareState = {
 };
 
 let users: UserI[] = [
-	// { name: "Juan", userId: "1", socketId: "1", points: 0 },
-	// { name: "Alex2", userId: "2", socketId: "2", points: 0 },
-	// { name: "Miguel", userId: "3", socketId: "2", points: 0 },
+	// { name: "Juan", userId: "1", socketId: "1", points: 1 },
+	// { name: "Alex2", userId: "2", socketId: "2", points: 3 },
+	// { name: "Miguel", userId: "3", socketId: "3", points: 3 },
 ];
-let gameState: GameStateI = { ...bareState, playersAnswers: [] };
+// let gameState: GameStateI = { ...bareState, playersAnswers: [] };
+let gameState: GameStateI = {
+	...bareState,
+	playersAnswers: [
+		// { answer: "Tea", userId: "2", name: "Alex2" },
+		// { answer: "Coffee", userId: "3", name: "Miguel" },
+	],
+	// started: true,
+	// masterAnswer: "Tea",
+};
 let questions: QuestionI[] = questionsArray;
 
 const TIMEOUT_DURATION = 5000; // 1 minute in milliseconds
@@ -143,6 +153,7 @@ io.on("connection", (socket) => {
 			currentMasterIndex: index,
 			// masterAnswer: "DC",
 		};
+		questions = shuffleArray(questions);
 
 		updateGameState();
 	});
